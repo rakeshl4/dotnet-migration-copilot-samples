@@ -10,25 +10,42 @@ namespace ContosoUniversity.Services
     {
         private readonly string _queuePath;
         private readonly MessageQueue _queue;
+        private readonly bool _isMsmqAvailable;
 
         public NotificationService()
         {
-            // Get queue path from configuration or use default
-            _queuePath = ConfigurationManager.AppSettings["NotificationQueuePath"] ?? @".\Private$\ContosoUniversityNotifications";
-            
-            // Ensure the queue exists
-            if (!MessageQueue.Exists(_queuePath))
+            try
             {
-                _queue = MessageQueue.Create(_queuePath);
-                _queue.SetPermissions("Everyone", MessageQueueAccessRights.FullControl);
+                // Get queue path from configuration or use default
+                _queuePath = ConfigurationManager.AppSettings["NotificationQueuePath"] ?? @".\Private$\ContosoUniversityNotifications";
+                
+                // Ensure the queue exists
+                if (!MessageQueue.Exists(_queuePath))
+                {
+                    _queue = MessageQueue.Create(_queuePath);
+                    _queue.SetPermissions("Everyone", MessageQueueAccessRights.FullControl);
+                }
+                else
+                {
+                    _queue = new MessageQueue(_queuePath);
+                }
+                
+                // Configure queue formatter
+                _queue.Formatter = new XmlMessageFormatter(new Type[] { typeof(string) });
+                _isMsmqAvailable = true;
             }
-            else
+            catch (InvalidOperationException ex)
             {
-                _queue = new MessageQueue(_queuePath);
+                // MSMQ is not installed - disable notification service
+                System.Diagnostics.Debug.WriteLine($"MSMQ not available: {ex.Message}. Notifications are disabled.");
+                _isMsmqAvailable = false;
             }
-            
-            // Configure queue formatter
-            _queue.Formatter = new XmlMessageFormatter(new Type[] { typeof(string) });
+            catch (Exception ex)
+            {
+                // Other MSMQ errors - disable notification service
+                System.Diagnostics.Debug.WriteLine($"Failed to initialize MSMQ: {ex.Message}. Notifications are disabled.");
+                _isMsmqAvailable = false;
+            }
         }
 
         public void SendNotification(string entityType, string entityId, EntityOperation operation, string userName = null)
@@ -38,6 +55,13 @@ namespace ContosoUniversity.Services
 
         public void SendNotification(string entityType, string entityId, string entityDisplayName, EntityOperation operation, string userName = null)
         {
+            // Skip if MSMQ is not available
+            if (!_isMsmqAvailable)
+            {
+                System.Diagnostics.Debug.WriteLine("MSMQ not available - skipping notification");
+                return;
+            }
+
             try
             {
                 var notification = new Notification
@@ -69,6 +93,12 @@ namespace ContosoUniversity.Services
 
         public Notification ReceiveNotification()
         {
+            // Skip if MSMQ is not available
+            if (!_isMsmqAvailable)
+            {
+                return null;
+            }
+
             try
             {
                 var message = _queue.Receive(TimeSpan.FromSeconds(1));
